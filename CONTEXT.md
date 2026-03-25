@@ -32,13 +32,14 @@ Last year's two RL lectures (57 + 70 slides) tried to cover too many concepts to
    - MDP definition: S, A, P(s'|s,a), R(s,a,s'), s_0, gamma, H
    - Modeling examples: Grid-world, **2D Crawler**, Hopper, Humanoid
    - Solving MDPs: policy, optimal policy, deterministic vs stochastic
-3. Exact Solution Methods (slides 30-35)
+3. Exact Solution Methods (slides 30-35) + **Demo 0**
    - Value function V^pi(s), Optimal value function V*(s)
    - Connection to dynamic programming (optimal substructure, overlapping subproblems)
    - Bellman Optimality Equation -> Value Iteration algorithm
    - Value Iteration in action (grid-world visualization)
+   - **[DEMO 0] Value Iteration on 2D Crawler** -- builds model via teleportation, VI converges, but policy barely works (Markov property violated by angle-only state)
    - Policy Iteration (evaluate -> improve cycle)
-   - **Key limitations:** need state sweeping, need dynamics model, discrete toy problems only
+   - **Key limitations:** need state sweeping, need dynamics model, need correct state representation
 
 **--- Break ---**
 
@@ -100,14 +101,20 @@ Use the **same custom 2D MuJoCo crawler** throughout all demos. Only change the 
 ### Lecture 1 Demo: `demo_crawler_rl.ipynb`
 Custom 2D MuJoCo crawler (3-body: torso + arm + hand, 2 hinge joints, constrained to 2D via slide joints).
 
-| Demo | Algorithm | State | Actions | Expected Result |
-|------|-----------|-------|---------|-----------------|
-| 1 | Tabular Q-learning | 2D (angles only), 81 states | 4 discrete | Works -- learns to crawl |
-| 2 | Tabular Q-learning | 4D (angles + velocities), 6561 states | 4 discrete | Breaks -- curse of dimensionality |
-| 3 | DQN | 4D continuous | 4 discrete | Works -- neural net handles continuous states |
-| 4 | DQN | 4D continuous | 9/49/121 discretized continuous | Breaks -- can't handle fine action discretization |
+| Demo | Algorithm | State | Actions | Result | Limitation Shown |
+|------|-----------|-------|---------|--------|-----------------|
+| 0 | **Value Iteration** | 2D (angles only), 81 states | 4 discrete | Barely works (~random) | Needs model access + correct state representation |
+| 1 | Tabular Q-learning | 2D (angles only), 81 states | 4 discrete | Works (~10 reward) | -- |
+| 2 | Tabular Q-learning | 4D (angles + velocities), 6561 states | 4 discrete | Breaks | Curse of dimensionality |
+| 3 | DQN | 4D continuous | 4 discrete | Works | -- |
+| 4 | DQN | 4D continuous | 9/49/121 discretized continuous | Breaks | Discrete actions only |
 
-**Transition message:** "We need a method that works natively with continuous actions" -> Policy Gradient
+**Demo 0 details (Value Iteration):** Builds transition model by teleporting crawler to all 81 states x 4 actions = 324 simulator calls. VI converges instantly, but the policy barely moves because the 2D state (angles only, no velocity) violates the Markov property -- same angles with different velocities lead to different outcomes. The model is wrong, so the solution is wrong. This teaches TWO lessons: (1) model access is expensive/impractical, (2) model accuracy matters (garbage in = garbage out). Q-learning (Demo 1) on the same 2D state works much better (~10 reward) because it learns from real trajectories where velocity dynamics are implicitly present.
+
+**Each limitation motivates the next algorithm:**
+- VI needs model access -> Q-learning learns from experience
+- Tabular Q can't scale -> DQN uses neural network
+- DQN needs discrete actions -> Policy Gradient works with continuous actions
 
 ### Lecture 2 Demo: `demo_policy_gradient.ipynb`
 | Demo | Algorithm | Environment | Key Point |
@@ -137,7 +144,7 @@ Custom 2D MuJoCo crawler (3-body: torso + arm + hand, 2 hinge joints, constraine
 | 13-20 | Deep RL highlights timeline | Keep, possibly update with 2025-2026 entries |
 | 21 | "Typical skeleton of applied RL paper" | Keep |
 | 22-29 | MDP definition + examples | Keep, emphasize 2D crawler example (slide 26) |
-| 30-35 | Exact methods (Bellman, VI, PI) | Keep but lighter on math, add intuitive explanations |
+| 30-35 | Exact methods (Bellman, VI, PI) | Keep lighter on math + **Demo 0: VI on crawler** |
 | 36-40 | Q-learning (tabular) | Keep + **add live demo** |
 | 41-42 | Crawler bot + "Can tabular scale?" | Keep + **live demo showing it breaks** |
 | 43-45 | Approximate Q / DQN | Keep + **add live demo** |
