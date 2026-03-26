@@ -26,3 +26,28 @@ The 4 discrete actions are bang-bang torque commands (full ±1 on each joint). W
 
 MuJoCo also supports `position` actuators (PD control to a target angle), which is what many real servos use. This model uses torque control, which is more common in RL research.
 
+## RL notes (useful for in-class discussion)
+
+### What does "high bias" mean in value-based methods?
+In Q-learning / DQN, "high bias" usually means the learning target is **systematically distorted**, not just noisy.
+
+- They optimize using a **bootstrapped target** instead of the true return.
+- Errors can **propagate through Bellman backups** from one state to many others.
+- With **function approximation**, these target errors can become much more severe.
+
+This is different from the policy-gradient story:
+- **High variance**: noisy updates, but on average the direction can still be right.
+- **High bias**: the update can look stable, but it is pushing toward the wrong solution.
+
+### What should we expect to see in the training curve?
+If bias is the main problem, the curve often looks **confident but wrong**:
+
+- **Early plateau at a suboptimal reward**: training improves a bit, then gets stuck below the best possible performance.
+- **Smooth convergence to the wrong policy**: the curve may look less noisy than REINFORCE, but it settles on poor behavior.
+- **Oscillation or drift**: Bellman errors feed into future targets, so reward can rise, then fall, then recover.
+- **Q-values become unrealistic while reward does not improve**: predicted values grow or drift, but actual return stays flat or worsens.
+- **Occasional collapse with function approximation**: training may appear to work for a while, then suddenly degrade.
+
+Short version for lecture:
+
+> High variance looks noisy. High bias looks stable but wrong.

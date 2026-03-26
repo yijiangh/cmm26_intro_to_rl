@@ -131,6 +131,7 @@ Custom 2D MuJoCo crawler (3-body: torso + arm + hand, 2 hinge joints, constraine
 - **Environment wrapper:** Gymnasium
 - **Target platform:** Google Colab (also runnable locally)
 - **Local venv:** `.venv/` with Python 3.13 (from miniconda), mujoco 3.6.0, torch 2.11, gymnasium 1.2.3, stable-baselines3 2.7.1
+- **Local Python usage:** when running Python locally in this repo, use the `.venv` environment
 
 ## Slide-to-Content Mapping (2025 -> 2026)
 
