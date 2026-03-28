@@ -3,3 +3,12 @@
 *.pptx
 *.mp4
 .DS_Store
+saved_checkpoints/
+saved_policies/
+saved_rollouts/
+.ipynb_checkpoints/
+.claude/
+.venv/
+_archived_demo_policy_gradient.ipynb
+lecture1_script.md
+CONTEXT.md
