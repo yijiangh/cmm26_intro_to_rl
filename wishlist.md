@@ -1,5 +1,6 @@
 # Lectuer 1
 
+UV python env.
 
 Crawler 2d demo:
 - The current Mujoco robot looks really ugly. That was the original design. 
