@@ -1,5 +1,10 @@
 # CMM 2026 RL Lecture Demos
 
+<p align="center">
+  <img src="generated_figures/gridworld_intro.png" alt="Gridworld teaser" width="48%" />
+  <img src="generated_figures/crawler_intro.png" alt="Crawler teaser" width="48%" />
+</p>
+
 This directory contains the lecture notebooks, figure-generation scripts, and crawler demos used for the 2026 "Computational Models of Motion" RL lectures.
 
 The main runnable pieces are:
@@ -12,11 +17,11 @@ The main runnable pieces are:
 
 Notebook overview:
 
-| Notebook | Contains | You learn |
+| Notebook | Algorithms covered | You learn |
 |---|---|---|
-| `L6-0_demo_gridworld_dp.ipynb` | Gridworld dynamic programming demos | value functions, Bellman backups, value iteration, policy iteration |
-| `L6-1_demo_crawler_q-learning.ipynb` | Crawler demos for tabular Q-learning and DQN | model-free value learning, scaling limits of the exact methods (VI, PI), why function approximation helps |
-| `L6-2_demo_crawler_pg.ipynb` | Crawler demos for REINFORCE and policy gradients | stochastic policies, continuous actions, likelihood-ratio gradient intuition |
+| `L6-0_demo_gridworld_dp.ipynb` | **gridworld**: policy evaluation, value iteration, policy iteration, Q-value iteration, tabular Q-learning | value functions, Bellman backups, exact planning vs sample-based learning |
+| `L6-1_demo_crawler_q-learning.ipynb` | **crawler2d**: value iteration, policy iteration, tabular Q-learning, DQN | model-based vs model-free control, state discretization limits, why function approximation helps |
+| `L6-2_demo_crawler_pg.ipynb` | **crawler2d**: REINFORCE, REINFORCE with baseline, actor-critic | stochastic policies, continuous actions, likelihood-ratio gradient intuition, variance reduction |
 
 ## 1. Prerequisites
 
