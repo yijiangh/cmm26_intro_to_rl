@@ -1,11 +1,5 @@
 # Lectuer 1
 
-UV python env.
-
-Crawler 2d demo:
-- The current Mujoco robot looks really ugly. That was the original design. 
-- 
-
 - [] [the real crawling robot](https://futurismo.biz/archives/6596/) for Q learning
 - [ ] Some code experiments to show the variance without baseline subtraction
 - [ ] Why baseline works for reducing the variance
