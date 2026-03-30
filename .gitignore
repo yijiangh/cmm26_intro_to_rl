@@ -4,9 +4,7 @@
 *.pptx
 *.mp4
 .DS_Store
-saved_checkpoints/
 saved_policies/
-saved_rollouts/
 .ipynb_checkpoints/
 .claude/
 .venv/

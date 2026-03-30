@@ -31,6 +31,8 @@ Recommended local setup:
 - Ubuntu or macOS
 - a working GUI environment if you want to run `teleop_crawler.py`
 
+If you are on Windows, you can still try following the installation steps below. We have not tested this setup on Windows. If it does not work reliably, use the Colab or Docker setup instead.
+
 Notes:
 
 - `mujoco` is installed from PyPI; no separate MuJoCo download is required for this repo.
@@ -321,7 +323,6 @@ Running the notebooks and scripts will read from or write to these directories:
 
 - `generated_figures/`: regenerated static figures for slides and notebooks
 - `saved_checkpoints/`: notebook training checkpoints
-- `saved_policies/`: exported reusable policies
 - `saved_rollouts/`: saved rollout videos/data
 
 These folders are part of the workflow. Do not delete them unless you intentionally want to discard cached outputs.
@@ -372,6 +373,5 @@ If you just want the shortest path from clone to running notebooks:
 cd /path/to/rl_lectures
 python3 -m pip install --user uv
 ~/.local/bin/uv sync
-.venv/bin/python -m ipykernel install --user --name rl-lectures --display-name "Python (rl-lectures)"
 ~/.local/bin/uv run jupyter lab
 ```
