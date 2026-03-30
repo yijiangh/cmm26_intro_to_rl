@@ -10,6 +10,14 @@ The main runnable pieces are:
 - `teleop_crawler.py`: interactive crawler teleoperation demo
 - `scripts/*.py`: one-off figure generators for lecture visuals
 
+Notebook overview:
+
+| Notebook | Contains | You learn |
+|---|---|---|
+| `L6-0_demo_gridworld_dp.ipynb` | Gridworld dynamic programming demos | value functions, Bellman backups, value iteration, policy iteration |
+| `L6-1_demo_crawler_q-learning.ipynb` | Crawler demos for tabular Q-learning and DQN | model-free value learning, scaling limits of the exact methods (VI, PI), why function approximation helps |
+| `L6-2_demo_crawler_pg.ipynb` | Crawler demos for REINFORCE and policy gradients | stochastic policies, continuous actions, likelihood-ratio gradient intuition |
+
 ## 1. Prerequisites
 
 Recommended local setup:
@@ -26,6 +34,7 @@ Notes:
 - `uv` works on macOS, Linux, and Windows, but this repo has only been tested locally on Ubuntu and macOS.
 - This repo now includes a minimal `pyproject.toml` and `.python-version`, so `uv sync` can create and populate the environment directly from project metadata.
 - On Linux, `pip install torch` may install a CUDA-enabled wheel. If you specifically want a CPU-only PyTorch build, use the selector on the official PyTorch install page instead of the default command below.
+- On Windows, if local Python, MuJoCo, or GUI setup becomes painful, a Docker-based notebook workflow is a reasonable fallback.
 
 Install `ffmpeg` before running notebooks that save videos:
 
@@ -44,6 +53,8 @@ brew install ffmpeg
 
 ## 2. Create and configure the environment
 
+### 2.1 Using `uv`
+
 Recommended `uv` workflow from this directory:
 
 ```bash
@@ -55,7 +66,15 @@ If `uv` is on your `PATH`, you can replace `~/.local/bin/uv` with `uv`.
 
 `uv sync` will create `.venv/`, resolve from `pyproject.toml`, and install the pinned dependencies into that environment.
 
-If you prefer not to use `uv`, the `virtualenv` fallback also works:
+With `uv`, you can also run notebook commands without manually activating first:
+
+```bash
+~/.local/bin/uv run jupyter lab
+```
+
+### 2.2 Using `.venv` directly
+
+If you prefer not to use `uv`, the `virtualenv` workflow also works:
 
 ```bash
 python3 -m pip install --user virtualenv
@@ -119,17 +138,93 @@ Register the environment as a Jupyter kernel:
 .venv/bin/python -m ipykernel install --user --name rl-lectures --display-name "Python (rl-lectures)"
 ```
 
-With `uv`, you can also run notebook commands without manually activating first:
-
-```bash
-~/.local/bin/uv run jupyter lab
-```
-
 Quick verification:
 
 ```bash
 .venv/bin/python -c "import mujoco, torch, gymnasium, stable_baselines3; print(mujoco.__version__, torch.__version__)"
 ```
+
+### 2.3 Using Google Colab
+
+If you do not want to install anything locally, the notebooks are written to be Colab-friendly.
+
+Recommended Colab workflow:
+
+1. Upload the notebook you want to run to Google Colab.
+2. Run the cells from top to bottom.
+3. Approve any notebook setup cells that install Python packages.
+
+What works well in Colab:
+
+- `L6-0_demo_gridworld_dp.ipynb`
+- `L6-1_demo_crawler_q-learning.ipynb`
+- `L6-2_demo_crawler_pg.ipynb`
+
+Important Colab notes:
+
+- the crawler notebooks already include setup cells such as `!pip install -q mujoco` for Colab compatibility
+- the crawler environments are defined inline in the notebooks, so no separate package install from this README is usually needed beyond running the notebook cells
+- notebook files saved in Colab stay in your Colab or Google Drive workflow unless you explicitly download them back into this repo
+- `teleop_crawler.py` is not the intended workflow for Colab
+
+### 2.4 Backup option for Windows: run notebooks in Docker
+
+If you are on Windows and cannot get the local Python or MuJoCo setup working reliably, use Docker Desktop as a fallback for the notebooks.
+
+What this fallback is good for:
+
+- running `L6-0_demo_gridworld_dp.ipynb`
+- running the crawler notebooks through Jupyter in a browser
+- avoiding most host-side Python package issues
+
+What it is **not** good for:
+
+- `teleop_crawler.py` GUI usage
+- tightly integrated desktop graphics workflows
+- fastest possible training performance
+
+Prerequisites:
+
+- install Docker Desktop
+- enable the WSL2 backend if Docker Desktop asks for it
+- open a PowerShell window in this repo root
+
+Start a Jupyter container with this repo mounted into `/workspace`:
+
+```bash
+docker run --rm -it -p 8888:8888 -v "${PWD}:/workspace" -w /workspace jupyter/scipy-notebook:python-3.11 bash
+```
+
+Inside the container, install the extra packages this repo needs:
+
+```bash
+pip install mujoco gymnasium torch stable-baselines3 ipywidgets
+```
+
+If you also want notebook video export inside the container, install `ffmpeg` there too:
+
+```bash
+apt-get update && apt-get install -y ffmpeg
+```
+
+Then start Jupyter inside the container:
+
+```bash
+jupyter notebook --ip=0.0.0.0 --port=8888 --no-browser --NotebookApp.token=''
+```
+
+Then open this URL in your browser on the Windows host:
+
+```text
+http://127.0.0.1:8888
+```
+
+Notes:
+
+- this container is a fallback, not the primary supported workflow
+- files you edit in the notebook are saved back to the mounted repo on the host
+- if video export still fails in the container, skip the export cells first and debug `ffmpeg` second
+- if you want a persistent image for repeated use, build your own Dockerfile later instead of reinstalling packages every time
 
 ## 3. Activate the environment in later sessions
 
@@ -142,7 +237,17 @@ source .venv/bin/activate
 
 ## 4. Run the notebooks
 
-Start Jupyter:
+### 4.1 With `uv`
+
+Start Jupyter without activating the environment:
+
+```bash
+~/.local/bin/uv run jupyter notebook
+```
+
+### 4.2 With an activated `.venv`
+
+Start Jupyter after activation:
 
 ```bash
 jupyter notebook
@@ -216,15 +321,11 @@ Running the notebooks and scripts will read from or write to these directories:
 
 These folders are part of the workflow. Do not delete them unless you intentionally want to discard cached outputs.
 
-## 8. Colab usage
+## 8. Colab notes
 
-The notebooks are written to be Colab-friendly:
+See Section `2.3 Using Google Colab` for the actual Colab workflow.
 
-- the setup cells install `mujoco`
-- the crawler environments are defined inline in the notebooks
-- no separate package install step from this README is required in Colab beyond running the notebook cells
-
-For local work, use the `.venv` instructions above instead of relying on per-notebook installs.
+For local work, use the `uv` or `.venv` instructions above instead of relying on per-notebook installs.
 
 ## 9. Troubleshooting
 

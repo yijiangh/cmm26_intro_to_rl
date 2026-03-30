@@ -81,6 +81,87 @@ This sits between DP and Monte Carlo:
 - it does not use a full transition model like DP
 - but it still bootstraps because the target contains `V(s_{t+1})`
 
+## Cost-to-go in optimal control and Bellman updates
+
+In optimal control, the cost-to-go is the total future cost accumulated from a given state and time onward, assuming you follow a particular control policy or the optimal one.
+
+For a system at time `t` in state `x_t`, the cost-to-go is typically
+
+\[
+J_t = \sum_{k=t}^{T-1} \ell(x_k, u_k) + \ell_T(x_T),
+\]
+
+where:
+
+- `\ell(x_k, u_k)` is the stage or running cost
+- `\ell_T(x_T)` is the terminal cost
+
+If we write it as a function of state, then
+
+\[
+V_t(x) = \min_{u_t,u_{t+1},\dots} \left[ \sum_{k=t}^{T-1} \ell(x_k, u_k) + \ell_T(x_T) \right],
+\]
+
+subject to the system dynamics. This `V_t(x)` is the optimal cost-to-go, also called the value function.
+
+So intuitively:
+
+- cost = what you pay now
+- cost-to-go = what you will pay from now until the end
+- optimal cost-to-go = the minimum future cost achievable from this state onward
+
+In infinite-horizon form, this becomes
+
+\[
+V(x)=\min_{\pi} \mathbb{E}\left[\sum_{k=0}^{\infty} \gamma^k \ell(x_k,u_k)\mid x_0=x\right].
+\]
+
+This is the direct optimal-control analogue of the RL value function, except RL usually writes it as reward-to-go and maximizes instead of minimizing.
+
+Reference for students more familiar with optimal control terminology:
+
+- [16-745 Optimal Control Lecture 24 notes](https://github.com/Optimal-Control-16-745/lecture-notebooks-2023/blob/main/Lecture%2024/Lecture%2024.pdf)
+
+### Where is the cost-to-go in Value Iteration?
+
+A common confusion is that the Bellman update seems to show only the immediate reward or cost, not the full downstream term. But the cost-to-go is already embedded in the value term on the right-hand side.
+
+For rewards, value iteration is
+
+\[
+V_{k+1}(s) = \max_a \sum_{s'} P(s'|s,a)\left[r(s,a,s') + \gamma V_k(s')\right].
+\]
+
+Here:
+
+- `r(s,a,s')` is the immediate one-step reward
+- `\gamma V_k(s')` is the future reward after landing in `s'`
+
+That second term is exactly the reward-to-go or cost-to-go term. The Bellman update is doing a one-step lookahead:
+
+“If I take action `a` now, I get immediate reward now, plus the best long-term value from wherever I land next.”
+
+If students are thinking in costs instead of rewards, the equivalent form is
+
+\[
+J_{k+1}(s)=\min_a \sum_{s'} P(s'|s,a)\left[c(s,a,s')+\gamma J_k(s')\right].
+\]
+
+Then:
+
+- `c(s,a,s')` is the immediate stage cost
+- `\gamma J_k(s')` is the future cost-to-go
+
+So the cost-to-go is not missing. It is the `V_k(s')` term in reward form or the `J_k(s')` term in cost form.
+
+Another useful intuition is that value iteration propagates future consequences backward through the state space:
+
+- after one update, states near reward or penalty get informative values
+- after two updates, states two steps away begin to reflect those outcomes
+- after many updates, the value function encodes long-horizon consequences
+
+So value iteration does not explicitly unroll an entire future trajectory every time. Instead, it compresses all future consequences into the scalar value of the next state and recursively refines that estimate.
+
 ## Why can Q-learning beat Value Iteration in the crawler demo?
 
 Important refinement from the demos:

@@ -1,5 +1,6 @@
 .venv/*
 *.pdf
+!/CMM26_RL_lecture1.pdf
 *.pptx
 *.mp4
 .DS_Store
