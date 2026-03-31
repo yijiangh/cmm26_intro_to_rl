@@ -43,12 +43,13 @@ def main():
             "Main message:\n"
             "- On the current saved crawler outputs, PPO does **not** beat the best baseline variants in raw reward; the strongest crawler baseline remains higher.\n"
             "- PPO still shows the intended algorithmic effect: its raw advantage-variability proxy is much lower than the REINFORCE / baseline variants on this task, which is consistent with **better-conditioned updates**.\n"
-            "- So this crawler notebook is best read as a bridge: it shows why PPO is attractive, but the clearer scaling story should come from a harder continuous-control task such as a **3D humanoid**.\n"
+            "- So the crawler section is best read as a bridge: it shows why PPO is attractive, but the clearer scaling story comes from the **Humanoid 3D** section later in this notebook.\n"
             "- To make the comparison fair and fast, we **load the previously saved REINFORCE / baseline / Actor-Critic checkpoints** whenever they are available, and only train PPO if its checkpoints are missing."
         ),
         code(
             "# Setup\n"
             "import numpy as np\n"
+            "import gymnasium as gym\n"
             "import mujoco\n"
             "import matplotlib.pyplot as plt\n"
             "from matplotlib import animation\n"
@@ -62,6 +63,9 @@ def main():
             "import torch.nn as nn\n"
             "import torch.optim as optim\n"
             "from torch.distributions import Normal\n\n"
+            "from stable_baselines3 import PPO as SB3PPO\n"
+            "from stable_baselines3.common.callbacks import BaseCallback\n"
+            "from stable_baselines3.common.vec_env import DummyVecEnv, VecMonitor, VecNormalize\n\n"
             "print(f'MuJoCo version: {mujoco.__version__}')\n"
             "print(f'PyTorch version: {torch.__version__}')\n"
             "device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')\n"
@@ -620,6 +624,860 @@ def main():
             "))\n"
         ),
         md(
+            "## Scaling Test: Humanoid 3D\n\n"
+            "The crawler only has **2 actions** and short, low-dimensional trajectories. "
+            "To test whether PPO really scales better, we need a harder control problem.\n\n"
+            "`Humanoid-v5` is a much stronger stress test:\n"
+            "- The action space is **17-dimensional** instead of 2-dimensional.\n"
+            "- The observation is much larger, and the body has many more coupled joints.\n"
+            "- Episodes are longer, so delayed credit assignment matters more.\n\n"
+            "The comparison below uses **environment steps** on the x-axis and then evaluates the trained policies on a shared rollout seed.\n"
+            "This time we include two REINFORCE-style baselines: a **learned value baseline** and a simpler **time-dependent baseline**.\n"
+            "The intended lesson is practical rather than theoretical: on this higher-dimensional task, the simpler REINFORCE baseline can break down badly, the learned baseline does better but still plateaus sooner, and PPO can keep improving when we let it train longer.\n"
+            "So the Humanoid section is set up as a **baseline quality + continued-improvement** comparison rather than a strict equal-budget benchmark."
+        ),
+        code(
+            """# ============================================================
+# Humanoid 3D helpers
+# ============================================================
+
+HUMANOID_ENV_ID = 'Humanoid-v5'
+HUMANOID_SEED = 0
+HUMANOID_BASELINE_STEP_BUDGET = 100_000
+HUMANOID_PPO_STEP_BUDGET = 300_000
+
+
+class ScaledGaussianPolicy(nn.Module):
+    def __init__(self, obs_dim, act_dim, hidden=128, init_log_std=-1.0, action_scale=1.0):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(obs_dim, hidden), nn.Tanh(),
+            nn.Linear(hidden, hidden), nn.Tanh(),
+            nn.Linear(hidden, act_dim), nn.Tanh(),
+        )
+        self.log_std = nn.Parameter(torch.full((act_dim,), float(init_log_std)))
+        self.action_scale = float(action_scale)
+
+    def forward(self, obs):
+        mu = self.net(obs) * self.action_scale
+        std = self.log_std.exp() * self.action_scale
+        return mu, std
+
+    def get_action(self, obs):
+        mu, std = self.forward(obs)
+        dist = Normal(mu, std)
+        raw_action = dist.sample()
+        log_prob = dist.log_prob(raw_action).sum(dim=-1)
+        return raw_action.clamp(-self.action_scale, self.action_scale), log_prob
+
+
+class EpisodeStatsCallback(BaseCallback):
+    def __init__(self):
+        super().__init__()
+        self.episode_rewards = []
+        self.episode_lengths = []
+        self.timesteps = []
+        self.episode_distances = []
+
+    def _on_step(self):
+        infos = self.locals.get('infos', [])
+        dones = self.locals.get('dones', [])
+        for done, info in zip(dones, infos):
+            if done and 'episode' in info:
+                self.episode_rewards.append(float(info['episode']['r']))
+                self.episode_lengths.append(int(info['episode']['l']))
+                self.timesteps.append(int(self.num_timesteps))
+                self.episode_distances.append(float(info.get('x_position', np.nan)))
+        return True
+
+
+def make_humanoid_env(*, seed=None, render_mode=None):
+    env = gym.make(HUMANOID_ENV_ID, render_mode=render_mode)
+    if seed is not None:
+        env.reset(seed=seed)
+    return env
+
+
+def make_humanoid_vec_env(*, n_envs=4, seed=0):
+    def make_single(rank):
+        def thunk():
+            env = gym.make(HUMANOID_ENV_ID)
+            env.reset(seed=seed + rank)
+            return env
+        return thunk
+
+    vec_env = DummyVecEnv([make_single(rank) for rank in range(n_envs)])
+    vec_env = VecMonitor(vec_env)
+    vec_env = VecNormalize(vec_env, norm_obs=True, norm_reward=True, clip_obs=10.0, gamma=0.99)
+    return vec_env
+
+
+def humanoid_pg_meta(variant, *, seed, step_budget):
+    return {
+        'demo': 'L7-1',
+        'variant': variant,
+        'config_name': f'{HUMANOID_ENV_ID}_steps{step_budget}',
+        'seed': int(seed),
+        'step_budget': int(step_budget),
+    }
+
+
+def humanoid_ppo_meta(*, seed, total_timesteps, n_envs):
+    return {
+        'demo': 'L7-1',
+        'variant': 'humanoid_ppo',
+        'config_name': f'{HUMANOID_ENV_ID}_n_envs{n_envs}_steps{total_timesteps}_distance_tracking_v2',
+        'seed': int(seed),
+        'step_budget': int(total_timesteps),
+        'n_envs': int(n_envs),
+    }
+
+
+def maybe_load_humanoid_pg_checkpoint(*, kind, obs_dim, act_dim, hidden, action_scale, label,
+                                      extra_meta=None, with_critic=True):
+    if FORCE_RETRAIN:
+        print(f'FORCE_RETRAIN=True for {label}; ignoring saved checkpoint.')
+        return None
+
+    required_meta = {
+        'obs_dim': int(obs_dim),
+        'act_dim': int(act_dim),
+        'hidden': int(hidden),
+        'critic_hidden': int(hidden),
+        'action_scale': float(action_scale),
+    }
+    if extra_meta:
+        required_meta.update(extra_meta)
+
+    path = checkpoint_path_for(kind, required_meta)
+    payload = load_pg_checkpoint(path, verbose=False)
+    if not checkpoint_matches(payload, kind=kind, required_meta=required_meta):
+        return None
+
+    actor = ScaledGaussianPolicy(
+        obs_dim,
+        act_dim,
+        hidden,
+        init_log_std=float(required_meta.get('init_log_std', -1.0)),
+        action_scale=action_scale,
+    ).to(device)
+    actor.load_state_dict(payload['policy_state_dict'])
+    actor.eval()
+
+    rewards = list(payload.get('rewards', []))
+    extras = payload.get('extras', {})
+    print(f'Loaded checkpoint for {label}; skipping retraining.')
+    print(f'  path: {path}')
+
+    if with_critic:
+        critic = ValueNetwork(obs_dim, hidden).to(device)
+        critic.load_state_dict(payload['critic_state_dict'])
+        critic.eval()
+        return actor, critic, rewards, extras
+
+    return actor, rewards, extras
+
+
+def humanoid_ppo_paths(meta):
+    slug = checkpoint_slug('humanoid_ppo', meta)
+    return {
+        'model': CHECKPOINT_DIR / f'{slug}.zip',
+        'vecnorm': CHECKPOINT_DIR / f'{slug}_vecnormalize.pkl',
+        'metrics': CHECKPOINT_DIR / f'{slug}_metrics.pt',
+    }
+
+
+def smooth_xy(x, y, window=20):
+    x = np.asarray(x, dtype=np.float32)
+    y = np.asarray(y, dtype=np.float32)
+    if len(x) == 0 or len(y) == 0:
+        return np.array([], dtype=np.float32), np.array([], dtype=np.float32)
+    if len(y) < window:
+        return x, y
+    kernel = np.ones(window, dtype=np.float32) / window
+    return x[window - 1:], np.convolve(y, kernel, mode='valid')
+
+
+def plot_step_curve(ax, timesteps, rewards, *, color, label, window=20):
+    x_raw = np.asarray(timesteps, dtype=np.float32)
+    y_raw = np.asarray(rewards, dtype=np.float32)
+    if len(x_raw) == 0:
+        return
+    ax.plot(x_raw, y_raw, color=color, alpha=0.12)
+    x_smooth, y_smooth = smooth_xy(x_raw, y_raw, window=window)
+    ax.plot(x_smooth, y_smooth, color=color, linewidth=2.5, label=label)
+
+
+def evaluate_humanoid_policy(policy_fn, *, seed=123, max_steps=1000):
+    env = make_humanoid_env(seed=seed)
+    obs, _ = env.reset(seed=seed)
+    x_start = float(env.unwrapped.data.qpos[0])
+    total_reward = 0.0
+    steps = 0
+
+    while steps < max_steps:
+        action = np.asarray(policy_fn(obs), dtype=np.float32)
+        obs, reward, terminated, truncated, _ = env.step(action)
+        total_reward += float(reward)
+        steps += 1
+        if terminated or truncated:
+            break
+
+    x_end = float(env.unwrapped.data.qpos[0])
+    env.close()
+    return {
+        'distance': x_end - x_start,
+        'reward': total_reward,
+        'steps': steps,
+    }
+
+
+def render_humanoid_policy(policy_fn, *, seed=123, duration_seconds=10.0, max_steps=None):
+    env = make_humanoid_env(seed=seed, render_mode='rgb_array')
+    obs, _ = env.reset(seed=seed)
+    x_start = float(env.unwrapped.data.qpos[0])
+    total_reward = 0.0
+    steps = 0
+    frames = []
+    if max_steps is None:
+        dt = float(getattr(env.unwrapped, 'dt', 0.015))
+        max_steps = int(round(duration_seconds / dt))
+
+    while steps < max_steps:
+        frame = env.render()
+        if frame is not None:
+            frames.append(frame.copy())
+        action = np.asarray(policy_fn(obs), dtype=np.float32)
+        obs, reward, terminated, truncated, _ = env.step(action)
+        total_reward += float(reward)
+        steps += 1
+        if terminated or truncated:
+            break
+
+    x_end = float(env.unwrapped.data.qpos[0])
+    env.close()
+    return frames, {
+        'distance': x_end - x_start,
+        'reward': total_reward,
+        'steps': steps,
+    }
+
+
+def train_humanoid_reinforce_baseline(*, step_budget=HUMANOID_BASELINE_STEP_BUDGET, gamma=0.99,
+                                      lr_actor=3e-4, lr_critic=1e-3, hidden=128,
+                                      init_log_std=-1.0, max_grad_norm=0.5, seed=0,
+                                      checkpoint_label=None, checkpoint_meta=None, verbose=True):
+    env = make_humanoid_env(seed=seed)
+    obs0, _ = env.reset(seed=seed)
+    obs_dim = int(obs0.shape[0])
+    act_dim = int(env.action_space.shape[0])
+    action_scale = float(env.action_space.high[0])
+
+    loaded = maybe_load_humanoid_pg_checkpoint(
+        kind='humanoid_reinforce_baseline',
+        obs_dim=obs_dim,
+        act_dim=act_dim,
+        hidden=hidden,
+        action_scale=action_scale,
+        label=checkpoint_label or 'Humanoid REINFORCE + baseline',
+        extra_meta=checkpoint_meta,
+        with_critic=True,
+    )
+    if loaded is not None:
+        env.close()
+        actor, critic, rewards_history, extras = loaded
+        metrics = {
+            'episode_rewards': list(rewards_history),
+            'timesteps': list(extras.get('timesteps', [])),
+            'episode_lengths': list(extras.get('episode_lengths', [])),
+            'episode_distances': list(extras.get('episode_distances', [])),
+            'elapsed': float(extras.get('elapsed', 0.0)),
+        }
+        return actor, critic, metrics
+
+    if seed is not None:
+        torch.manual_seed(seed)
+        np.random.seed(seed)
+
+    actor = ScaledGaussianPolicy(
+        obs_dim,
+        act_dim,
+        hidden,
+        init_log_std=init_log_std,
+        action_scale=action_scale,
+    ).to(device)
+    critic = ValueNetwork(obs_dim, hidden).to(device)
+    actor_opt = optim.Adam(actor.parameters(), lr=lr_actor)
+    critic_opt = optim.Adam(critic.parameters(), lr=lr_critic)
+
+    episode_rewards = []
+    episode_lengths = []
+    episode_distances = []
+    timesteps = []
+    steps_total = 0
+    episode_idx = 0
+    t0 = time.time()
+
+    while steps_total < step_budget:
+        obs, _ = env.reset(seed=seed + episode_idx)
+        x_start = float(env.unwrapped.data.qpos[0])
+        log_probs = []
+        values = []
+        rewards = []
+        done = False
+        truncated = False
+        episode_steps = 0
+
+        while not (done or truncated):
+            obs_t = torch.as_tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
+            value = critic(obs_t)
+            action_t, log_prob_t = actor.get_action(obs_t)
+            obs, reward, done, truncated, _ = env.step(action_t.squeeze(0).detach().cpu().numpy())
+            log_probs.append(log_prob_t.squeeze())
+            values.append(value.squeeze())
+            rewards.append(float(reward))
+            episode_steps += 1
+
+        returns_t = torch.as_tensor(discounted_returns(rewards, gamma=gamma), dtype=torch.float32, device=device)
+        values_t = torch.stack(values)
+        advantages_t = returns_t - values_t.detach()
+        if len(advantages_t) > 1:
+            advantages_t = (advantages_t - advantages_t.mean()) / (advantages_t.std() + 1e-8)
+
+        actor_loss = -(torch.stack(log_probs) * advantages_t).mean()
+        critic_loss = nn.functional.mse_loss(values_t, returns_t)
+
+        actor_opt.zero_grad()
+        actor_loss.backward()
+        nn.utils.clip_grad_norm_(actor.parameters(), max_grad_norm)
+        actor_opt.step()
+
+        critic_opt.zero_grad()
+        critic_loss.backward()
+        nn.utils.clip_grad_norm_(critic.parameters(), max_grad_norm)
+        critic_opt.step()
+
+        steps_total += episode_steps
+        episode_idx += 1
+        episode_rewards.append(float(np.sum(rewards)))
+        episode_lengths.append(int(episode_steps))
+        episode_distances.append(float(env.unwrapped.data.qpos[0] - x_start))
+        timesteps.append(int(steps_total))
+
+        if verbose and episode_idx % 25 == 0:
+            tail = episode_rewards[-25:]
+            print(
+                f'  REINFORCE + baseline | episode {episode_idx:4d} | '
+                f'steps {steps_total:6d} | avg reward {np.mean(tail):7.1f}'
+            )
+
+    elapsed = time.time() - t0
+    env.close()
+
+    if checkpoint_label is not None:
+        meta = {
+            'obs_dim': obs_dim,
+            'act_dim': act_dim,
+            'hidden': int(hidden),
+            'critic_hidden': int(hidden),
+            'action_scale': float(action_scale),
+            'init_log_std': float(init_log_std),
+        }
+        if checkpoint_meta:
+            meta.update(checkpoint_meta)
+        save_pg_checkpoint({
+            'kind': 'humanoid_reinforce_baseline',
+            'label': checkpoint_label,
+            'meta': meta,
+            'policy_state_dict': actor.state_dict(),
+            'critic_state_dict': critic.state_dict(),
+            'rewards': np.asarray(episode_rewards, dtype=np.float32),
+            'extras': {
+                'timesteps': np.asarray(timesteps, dtype=np.int32),
+                'episode_lengths': np.asarray(episode_lengths, dtype=np.int32),
+                'episode_distances': np.asarray(episode_distances, dtype=np.float32),
+                'elapsed': float(elapsed),
+            },
+        })
+
+    metrics = {
+        'episode_rewards': episode_rewards,
+        'timesteps': timesteps,
+        'episode_lengths': episode_lengths,
+        'episode_distances': episode_distances,
+        'elapsed': float(elapsed),
+    }
+    return actor, critic, metrics
+
+
+def train_humanoid_reinforce_time_baseline(*, step_budget=HUMANOID_BASELINE_STEP_BUDGET, gamma=0.99,
+                                           lr=3e-4, hidden=128, init_log_std=-1.0,
+                                           max_grad_norm=0.5, seed=0,
+                                           checkpoint_label=None, checkpoint_meta=None, verbose=True):
+    env = make_humanoid_env(seed=seed)
+    obs0, _ = env.reset(seed=seed)
+    obs_dim = int(obs0.shape[0])
+    act_dim = int(env.action_space.shape[0])
+    action_scale = float(env.action_space.high[0])
+
+    loaded = maybe_load_humanoid_pg_checkpoint(
+        kind='humanoid_reinforce_time_baseline',
+        obs_dim=obs_dim,
+        act_dim=act_dim,
+        hidden=hidden,
+        action_scale=action_scale,
+        label=checkpoint_label or 'Humanoid REINFORCE + time baseline',
+        extra_meta=checkpoint_meta,
+        with_critic=False,
+    )
+    if loaded is not None:
+        env.close()
+        actor, rewards_history, extras = loaded
+        metrics = {
+            'episode_rewards': list(rewards_history),
+            'timesteps': list(extras.get('timesteps', [])),
+            'episode_lengths': list(extras.get('episode_lengths', [])),
+            'episode_distances': list(extras.get('episode_distances', [])),
+            'elapsed': float(extras.get('elapsed', 0.0)),
+        }
+        return actor, metrics
+
+    if seed is not None:
+        torch.manual_seed(seed)
+        np.random.seed(seed)
+
+    actor = ScaledGaussianPolicy(
+        obs_dim,
+        act_dim,
+        hidden,
+        init_log_std=init_log_std,
+        action_scale=action_scale,
+    ).to(device)
+    optimizer = optim.Adam(actor.parameters(), lr=lr)
+
+    time_baseline_sum = []
+    time_baseline_count = []
+    episode_rewards = []
+    episode_lengths = []
+    episode_distances = []
+    timesteps = []
+    steps_total = 0
+    episode_idx = 0
+    t0 = time.time()
+
+    while steps_total < step_budget:
+        obs, _ = env.reset(seed=seed + episode_idx)
+        x_start = float(env.unwrapped.data.qpos[0])
+        log_probs = []
+        rewards = []
+        done = False
+        truncated = False
+        episode_steps = 0
+
+        while not (done or truncated):
+            obs_t = torch.as_tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
+            action_t, log_prob_t = actor.get_action(obs_t)
+            obs, reward, done, truncated, _ = env.step(action_t.squeeze(0).detach().cpu().numpy())
+            log_probs.append(log_prob_t.squeeze())
+            rewards.append(float(reward))
+            episode_steps += 1
+
+        returns_np = discounted_returns(rewards, gamma=gamma)
+        baseline_np = np.zeros_like(returns_np)
+        for t in range(len(returns_np)):
+            if t < len(time_baseline_sum) and time_baseline_count[t] > 0:
+                baseline_np[t] = time_baseline_sum[t] / time_baseline_count[t]
+
+        advantages_t = torch.as_tensor(returns_np - baseline_np, dtype=torch.float32, device=device)
+        if len(advantages_t) > 1:
+            advantages_t = (advantages_t - advantages_t.mean()) / (advantages_t.std() + 1e-8)
+
+        actor_loss = -(torch.stack(log_probs) * advantages_t).mean()
+        optimizer.zero_grad()
+        actor_loss.backward()
+        nn.utils.clip_grad_norm_(actor.parameters(), max_grad_norm)
+        optimizer.step()
+
+        while len(time_baseline_sum) < len(returns_np):
+            time_baseline_sum.append(0.0)
+            time_baseline_count.append(0)
+        for t, G in enumerate(returns_np):
+            time_baseline_sum[t] += float(G)
+            time_baseline_count[t] += 1
+
+        steps_total += episode_steps
+        episode_idx += 1
+        episode_rewards.append(float(np.sum(rewards)))
+        episode_lengths.append(int(episode_steps))
+        episode_distances.append(float(env.unwrapped.data.qpos[0] - x_start))
+        timesteps.append(int(steps_total))
+
+        if verbose and episode_idx % 25 == 0:
+            tail = episode_rewards[-25:]
+            print(
+                f'  REINFORCE + time baseline | episode {episode_idx:4d} | '
+                f'steps {steps_total:6d} | avg reward {np.mean(tail):7.1f}'
+            )
+
+    elapsed = time.time() - t0
+    env.close()
+
+    if checkpoint_label is not None:
+        meta = {
+            'obs_dim': obs_dim,
+            'act_dim': act_dim,
+            'hidden': int(hidden),
+            'action_scale': float(action_scale),
+            'init_log_std': float(init_log_std),
+        }
+        if checkpoint_meta:
+            meta.update(checkpoint_meta)
+        save_pg_checkpoint({
+            'kind': 'humanoid_reinforce_time_baseline',
+            'label': checkpoint_label,
+            'meta': meta,
+            'policy_state_dict': actor.state_dict(),
+            'rewards': np.asarray(episode_rewards, dtype=np.float32),
+            'extras': {
+                'timesteps': np.asarray(timesteps, dtype=np.int32),
+                'episode_lengths': np.asarray(episode_lengths, dtype=np.int32),
+                'episode_distances': np.asarray(episode_distances, dtype=np.float32),
+                'elapsed': float(elapsed),
+            },
+        })
+
+    metrics = {
+        'episode_rewards': episode_rewards,
+        'timesteps': timesteps,
+        'episode_lengths': episode_lengths,
+        'episode_distances': episode_distances,
+        'elapsed': float(elapsed),
+    }
+    return actor, metrics
+
+
+def train_humanoid_ppo(*, total_timesteps=HUMANOID_PPO_STEP_BUDGET, seed=0, n_envs=4, verbose=True):
+    meta = humanoid_ppo_meta(seed=seed, total_timesteps=total_timesteps, n_envs=n_envs)
+    paths = humanoid_ppo_paths(meta)
+
+    if not FORCE_RETRAIN and all(path.exists() for path in paths.values()):
+        vec_env = make_humanoid_vec_env(n_envs=n_envs, seed=seed)
+        vec_env = VecNormalize.load(str(paths['vecnorm']), vec_env)
+        vec_env.training = False
+        vec_env.norm_reward = False
+        model = SB3PPO.load(str(paths['model']), env=vec_env, device=str(device))
+        metrics = torch.load(paths['metrics'], map_location='cpu', weights_only=False)
+        for key in ('episode_rewards', 'episode_lengths', 'timesteps', 'episode_distances'):
+            metrics[key] = list(metrics.get(key, []))
+        metrics['elapsed'] = float(metrics.get('elapsed', 0.0))
+        print('Loaded checkpoint for Humanoid PPO; skipping retraining.')
+        print(f"  path: {paths['model']}")
+        return model, vec_env, metrics
+
+    vec_env = make_humanoid_vec_env(n_envs=n_envs, seed=seed)
+    callback = EpisodeStatsCallback()
+    model = SB3PPO(
+        'MlpPolicy',
+        vec_env,
+        learning_rate=3e-4,
+        n_steps=2048,
+        batch_size=256,
+        n_epochs=10,
+        gamma=0.99,
+        gae_lambda=0.95,
+        clip_range=0.2,
+        ent_coef=0.0,
+        vf_coef=0.5,
+        max_grad_norm=0.5,
+        seed=seed,
+        verbose=0,
+        device=str(device),
+        policy_kwargs={'net_arch': {'pi': [256, 256], 'vf': [256, 256]}},
+    )
+
+    t0 = time.time()
+    model.learn(total_timesteps=total_timesteps, callback=callback, progress_bar=False)
+    elapsed = time.time() - t0
+
+    model.save(str(paths['model']))
+    vec_env.save(str(paths['vecnorm']))
+    metrics = {
+        'label': 'Humanoid PPO',
+        'meta': meta,
+        'episode_rewards': list(callback.episode_rewards),
+        'episode_lengths': list(callback.episode_lengths),
+        'timesteps': list(callback.timesteps),
+        'episode_distances': list(callback.episode_distances),
+        'elapsed': float(elapsed),
+    }
+    torch.save(metrics, paths['metrics'])
+    print(f"Saved Humanoid PPO checkpoint -> {paths['model']}")
+    print(f"Saved VecNormalize stats -> {paths['vecnorm']}")
+
+    vec_env.training = False
+    vec_env.norm_reward = False
+    return model, vec_env, metrics
+
+
+def make_humanoid_actor_policy(actor):
+    def policy_fn(obs):
+        with torch.no_grad():
+            obs_t = torch.as_tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
+            mu, _ = actor(obs_t)
+            return mu.squeeze(0).cpu().numpy()
+
+    return policy_fn
+
+
+def make_humanoid_ppo_policy(model, vec_env):
+    def policy_fn(obs):
+        obs_batch = np.asarray(obs, dtype=np.float32)[None, :]
+        obs_norm = vec_env.normalize_obs(obs_batch.copy())
+        action, _ = model.predict(obs_norm, deterministic=True)
+        return action[0]
+
+    return policy_fn
+
+
+def summarize_single_run(metrics, tail=50):
+    rewards = np.asarray(metrics['episode_rewards'], dtype=np.float32)
+    if len(rewards) == 0:
+        return 0.0
+    return float(np.mean(rewards[-min(tail, len(rewards)):]))
+"""
+        ),
+        code(
+            """# ============================================================
+# Humanoid 3D: REINFORCE baselines vs PPO
+# ============================================================
+
+print('=== Humanoid 3D scaling test ===')
+print('Task: Humanoid-v5')
+humanoid_spec_env = gym.make(HUMANOID_ENV_ID)
+print(f'Observation dim: {humanoid_spec_env.observation_space.shape[0]}')
+print(f'Action dim: {humanoid_spec_env.action_space.shape[0]}')
+humanoid_spec_env.close()
+print(f'REINFORCE + baseline budget: {HUMANOID_BASELINE_STEP_BUDGET:,} environment steps')
+print(f'PPO budget                 : {HUMANOID_PPO_STEP_BUDGET:,} environment steps')
+
+humanoid_rb_label = 'Humanoid: REINFORCE + baseline'
+humanoid_rb_meta = humanoid_pg_meta('humanoid_reinforce_baseline', seed=HUMANOID_SEED, step_budget=HUMANOID_BASELINE_STEP_BUDGET)
+humanoid_actor_rb, humanoid_critic_rb, humanoid_rb_metrics = train_humanoid_reinforce_baseline(
+    step_budget=HUMANOID_BASELINE_STEP_BUDGET,
+    seed=HUMANOID_SEED,
+    hidden=128,
+    lr_actor=3e-4,
+    lr_critic=1e-3,
+    init_log_std=-1.0,
+    checkpoint_label=humanoid_rb_label,
+    checkpoint_meta=humanoid_rb_meta,
+    verbose=True,
+)
+
+humanoid_tb_label = 'Humanoid: REINFORCE + time baseline'
+humanoid_tb_meta = humanoid_pg_meta('humanoid_reinforce_time_baseline', seed=HUMANOID_SEED, step_budget=HUMANOID_BASELINE_STEP_BUDGET)
+humanoid_actor_tb, humanoid_tb_metrics = train_humanoid_reinforce_time_baseline(
+    step_budget=HUMANOID_BASELINE_STEP_BUDGET,
+    seed=HUMANOID_SEED,
+    hidden=128,
+    lr=3e-4,
+    init_log_std=-1.0,
+    checkpoint_label=humanoid_tb_label,
+    checkpoint_meta=humanoid_tb_meta,
+    verbose=True,
+)
+
+humanoid_ppo_model, humanoid_ppo_vecenv, humanoid_ppo_metrics = train_humanoid_ppo(
+    total_timesteps=HUMANOID_PPO_STEP_BUDGET,
+    seed=HUMANOID_SEED,
+    n_envs=4,
+    verbose=True,
+)
+
+fig, axes = plt.subplots(1, 2, figsize=(16, 5))
+plot_step_curve(
+    axes[0],
+    humanoid_rb_metrics['timesteps'],
+    humanoid_rb_metrics['episode_rewards'],
+    color='tab:orange',
+    label='REINFORCE + learned baseline',
+    window=20,
+)
+plot_step_curve(
+    axes[0],
+    humanoid_tb_metrics['timesteps'],
+    humanoid_tb_metrics['episode_rewards'],
+    color='tab:purple',
+    label='REINFORCE + time baseline',
+    window=20,
+)
+plot_step_curve(
+    axes[0],
+    humanoid_ppo_metrics['timesteps'],
+    humanoid_ppo_metrics['episode_rewards'],
+    color='tab:red',
+    label='PPO (4 envs + VecNormalize)',
+    window=20,
+)
+axes[0].set_title('Humanoid-v5 reward vs environment steps', fontsize=13, fontweight='bold')
+axes[0].set_xlabel('Environment steps')
+axes[0].set_ylabel('Episode reward')
+axes[0].grid(True, alpha=0.3)
+axes[0].legend(fontsize=11)
+
+plot_step_curve(
+    axes[1],
+    humanoid_rb_metrics['timesteps'],
+    humanoid_rb_metrics['episode_distances'],
+    color='tab:orange',
+    label='REINFORCE + learned baseline',
+    window=20,
+)
+plot_step_curve(
+    axes[1],
+    humanoid_tb_metrics['timesteps'],
+    humanoid_tb_metrics['episode_distances'],
+    color='tab:purple',
+    label='REINFORCE + time baseline',
+    window=20,
+)
+plot_step_curve(
+    axes[1],
+    humanoid_ppo_metrics['timesteps'],
+    humanoid_ppo_metrics['episode_distances'],
+    color='tab:red',
+    label='PPO (4 envs + VecNormalize)',
+    window=20,
+)
+axes[1].set_title('Humanoid-v5 forward distance vs environment steps', fontsize=13, fontweight='bold')
+axes[1].set_xlabel('Environment steps')
+axes[1].set_ylabel('Episode distance (m)')
+axes[1].grid(True, alpha=0.3)
+axes[1].legend(fontsize=11)
+plt.tight_layout()
+plt.show()
+
+humanoid_rb_last50 = summarize_single_run(humanoid_rb_metrics, tail=50)
+humanoid_tb_last50 = summarize_single_run(humanoid_tb_metrics, tail=50)
+humanoid_ppo_last50 = summarize_single_run(humanoid_ppo_metrics, tail=50)
+humanoid_rb_dist50 = float(np.mean(np.asarray(humanoid_rb_metrics['episode_distances'], dtype=np.float32)[-50:]))
+humanoid_tb_dist50 = float(np.mean(np.asarray(humanoid_tb_metrics['episode_distances'], dtype=np.float32)[-50:]))
+humanoid_ppo_dist50 = float(np.mean(np.asarray(humanoid_ppo_metrics['episode_distances'], dtype=np.float32)[-50:]))
+print('Final-window training reward:')
+print(f'  REINFORCE + learned baseline: {humanoid_rb_last50:7.1f}')
+print(f'  REINFORCE + time baseline   : {humanoid_tb_last50:7.1f}')
+print(f'  PPO                         : {humanoid_ppo_last50:7.1f}')
+print('Final-window forward distance:')
+print(f'  REINFORCE + learned baseline: {humanoid_rb_dist50:7.2f} m')
+print(f'  REINFORCE + time baseline   : {humanoid_tb_dist50:7.2f} m')
+print(f'  PPO                         : {humanoid_ppo_dist50:7.2f} m')
+
+humanoid_rb_policy = make_humanoid_actor_policy(humanoid_actor_rb)
+humanoid_tb_policy = make_humanoid_actor_policy(humanoid_actor_tb)
+humanoid_ppo_policy = make_humanoid_ppo_policy(humanoid_ppo_model, humanoid_ppo_vecenv)
+humanoid_eval_rb = evaluate_humanoid_policy(humanoid_rb_policy, seed=123)
+humanoid_eval_tb = evaluate_humanoid_policy(humanoid_tb_policy, seed=123)
+humanoid_eval_ppo = evaluate_humanoid_policy(humanoid_ppo_policy, seed=123)
+
+humanoid_eval_results = {
+    'REINFORCE + learned baseline': humanoid_eval_rb,
+    'REINFORCE + time baseline': humanoid_eval_tb,
+    'PPO': humanoid_eval_ppo,
+}
+
+labels = list(humanoid_eval_results.keys())
+distances = [humanoid_eval_results[label]['distance'] for label in labels]
+colors = ['tab:orange', 'tab:purple', 'tab:red']
+fig, ax = plt.subplots(figsize=(8, 3.8))
+bars = ax.bar(labels, distances, color=colors, edgecolor='white')
+ax.set_ylabel('Forward distance (m)')
+ax.set_title('Humanoid-v5 evaluation on a shared rollout seed', fontsize=13, fontweight='bold')
+ax.grid(True, axis='y', alpha=0.3)
+for bar, label in zip(bars, labels):
+    result = humanoid_eval_results[label]
+    ax.text(
+        bar.get_x() + bar.get_width() / 2,
+        bar.get_height() + 0.05,
+        f"{result['distance']:.2f}m\\nR={result['reward']:.1f}",
+        ha='center',
+        va='bottom',
+        fontsize=10,
+    )
+plt.tight_layout()
+plt.show()
+
+print('Shared-seed evaluation:')
+for label, result in humanoid_eval_results.items():
+    print(
+        f"{label:24s} | distance: {result['distance']:6.2f} m | "
+        f"reward: {result['reward']:7.1f} | steps: {result['steps']:4d}"
+    )
+"""
+        ),
+        code(
+"""# Humanoid rollout videos for the trained policies
+humanoid_rb_frames, humanoid_rb_video_result = render_humanoid_policy(
+    humanoid_rb_policy,
+    seed=123,
+    duration_seconds=10.0,
+)
+humanoid_tb_frames, humanoid_tb_video_result = render_humanoid_policy(
+    humanoid_tb_policy,
+    seed=123,
+    duration_seconds=10.0,
+)
+humanoid_ppo_frames, humanoid_ppo_video_result = render_humanoid_policy(
+    humanoid_ppo_policy,
+    seed=123,
+    duration_seconds=10.0,
+)
+
+humanoid_rb_video = show_video(
+    humanoid_rb_frames,
+    fps=30,
+    title=(
+        f"Humanoid REINFORCE + baseline — "
+        f"{humanoid_rb_video_result['distance']:.2f}m, R={humanoid_rb_video_result['reward']:.1f}"
+    ),
+).data
+humanoid_tb_video = show_video(
+    humanoid_tb_frames,
+    fps=30,
+    title=(
+        f"Humanoid REINFORCE + time baseline — "
+        f"{humanoid_tb_video_result['distance']:.2f}m, R={humanoid_tb_video_result['reward']:.1f}"
+    ),
+).data
+humanoid_ppo_video = show_video(
+    humanoid_ppo_frames,
+    fps=30,
+    title=(
+        f"Humanoid PPO — "
+        f"{humanoid_ppo_video_result['distance']:.2f}m, R={humanoid_ppo_video_result['reward']:.1f}"
+    ),
+).data
+
+display(HTML(
+    f\"\"\"
+<div style='display:flex;flex-direction:column;gap:18px;align-items:stretch;'>
+  <div style='background:#fff;border:1px solid #ddd;border-radius:10px;padding:12px;'>
+    <div style='font-weight:700;font-size:16px;margin-bottom:8px;'>Humanoid REINFORCE + learned baseline</div>
+    {humanoid_rb_video}
+  </div>
+  <div style='background:#fff;border:1px solid #ddd;border-radius:10px;padding:12px;'>
+    <div style='font-weight:700;font-size:16px;margin-bottom:8px;'>Humanoid REINFORCE + time baseline</div>
+    {humanoid_tb_video}
+  </div>
+  <div style='background:#fff;border:1px solid #ddd;border-radius:10px;padding:12px;'>
+    <div style='font-weight:700;font-size:16px;margin-bottom:8px;'>Humanoid PPO</div>
+    {humanoid_ppo_video}
+  </div>
+</div>
+\"\"\"
+))
+"""
+        ),
+        md(
             "## Reading the result\n\n"
             "The quantity on the right is not a formal variance proof. It is a practical proxy: the standard deviation of the **raw advantage weights** used before normalization.\n\n"
             "What the current saved output actually shows:\n"
@@ -629,10 +1487,12 @@ def main():
             "- PPO's strongest evidence here is the variance proxy: its raw advantage std is about **0.57**, versus **1.28** for the time-dependent baseline and roughly **1.78 to 2.01** for the other policy-gradient baselines. So on the crawler, PPO currently looks more like a **variance-control method** than a raw-performance win.\n\n"
             "Additional learning objective: scaling beyond the crawler\n"
             "- The crawler is still a small 2D task with only 2 continuous actions. That is useful for understanding the algorithm, but it is not yet the setting where PPO should be expected to show its biggest practical advantage.\n"
-            "- A better next comparison is a harder continuous-control environment such as a **Humanoid 3D** task, where the action space is much larger, trajectories are longer, and credit assignment is harder.\n"
-            "- The notebook should therefore add three follow-on demos: `REINFORCE` on Humanoid 3D, `REINFORCE with baseline / Actor-Critic` on Humanoid 3D, and `PPO` on Humanoid 3D, all evaluated with the same rollout metric and aligned training-curve plots.\n"
-            "- The intended lesson is that as the task becomes more complex, REINFORCE-style methods tend to **flatten** or become too noisy, while PPO's clipped updates can keep learning moving and scale more gracefully.\n"
-            "- In other words, the crawler notebook motivates the mechanism, and the humanoid demo should supply the stronger scaling evidence."
+            "- The Humanoid section makes that scaling point concrete with three methods: `REINFORCE + learned baseline`, `REINFORCE + time-dependent baseline`, and `PPO`. The two REINFORCE-style baselines are run for **100k** environment steps, while `PPO` is allowed to continue to **300k** steps on the same task.\n"
+            "- On Humanoid, total reward includes a large survival term, so the cleaner locomotion metric is **forward distance**. The notebook therefore emphasizes both reward and forward-distance curves, plus the shared-seed rollout videos.\n"
+            "- The actual saved Humanoid results separate the baselines clearly. By the last 50 episodes, the learned baseline reaches about **0.20 m** per episode, the time-dependent baseline is already failing at about **-0.05 m**, and PPO reaches about **0.41 m**.\n"
+            "- The shared-seed rollouts tell the same story: the learned baseline travels about **0.46 m**, the time-dependent baseline falls back to about **-0.09 m**, and PPO reaches about **0.59 m**.\n"
+            "- So the intended lesson now has direct empirical support in this notebook: once the task becomes more complex, a weaker REINFORCE baseline can collapse, a learned baseline helps but still plateaus sooner, and PPO can keep learning and scale more gracefully when training continues.\n"
+            "- In other words, the crawler notebook motivates the mechanism, and the humanoid demo supplies the stronger scaling evidence."
         ),
     ]
 
