@@ -12,6 +12,10 @@ The main runnable pieces are:
 - `L6-0_demo_gridworld_dp.ipynb`: exact methods on gridworld
 - `L6-1_demo_crawler_q-learning.ipynb`: value-based methods on the 2D MuJoCo crawler
 - `L6-2_demo_crawler_pg.ipynb`: policy-gradient methods on the same crawler
+- `L6-3a_demo_crawler_sac_vs_ppo.ipynb`: off-policy vs on-policy continuous-control comparison
+- `L6-3b_demo_crawler_reward_shaping.ipynb`: sparse vs dense vs shaped reward design
+- `L6-3c_demo_crawler_action_spaces.ipynb`: torque vs PD-target control interfaces
+- `L6-3d_demo_crawler_domain_rand.ipynb`: nominal vs domain-randomized robustness demo
 - `teleop_crawler.py`: interactive crawler teleoperation demo
 - `scripts/*.py`: one-off figure generators for lecture visuals
 
@@ -22,6 +26,10 @@ Notebook overview:
 | `L6-0_demo_gridworld_dp.ipynb` | **gridworld**: policy evaluation, value iteration, policy iteration, Q-value iteration, tabular Q-learning | value functions, Bellman backups, exact planning vs sample-based learning |
 | `L6-1_demo_crawler_q-learning.ipynb` | **crawler2d**: value iteration, policy iteration, tabular Q-learning, DQN | model-based vs model-free control, state discretization limits, why function approximation helps |
 | `L6-2_demo_crawler_pg.ipynb` | **crawler2d**: REINFORCE, REINFORCE with baseline, actor-critic | stochastic policies, continuous actions, likelihood-ratio gradient intuition, variance reduction |
+| `L6-3a_demo_crawler_sac_vs_ppo.ipynb` | **crawler2d**: SAC vs PPO | sample efficiency vs wall-clock efficiency in continuous control |
+| `L6-3b_demo_crawler_reward_shaping.ipynb` | **crawler2d**: PPO under sparse, dense, and shaped rewards | credit assignment, reward hacking, additive shaping tradeoffs |
+| `L6-3c_demo_crawler_action_spaces.ipynb` | **crawler2d**: PPO with torque, PD target, PD target + gains | why the policy-controller interface changes what RL can learn |
+| `L6-3d_demo_crawler_domain_rand.ipynb` | **crawler2d**: nominal vs DR PPO | robustness to perturbations, mass/friction shift, and live push demos |
 
 ## 1. Prerequisites
 
@@ -166,6 +174,10 @@ What works well in Colab:
 - `L6-0_demo_gridworld_dp.ipynb`
 - `L6-1_demo_crawler_q-learning.ipynb`
 - `L6-2_demo_crawler_pg.ipynb`
+- `L6-3a_demo_crawler_sac_vs_ppo.ipynb`
+- `L6-3b_demo_crawler_reward_shaping.ipynb`
+- `L6-3c_demo_crawler_action_spaces.ipynb`
+- `L6-3d_demo_crawler_domain_rand.ipynb`
 
 Important Colab notes:
 
