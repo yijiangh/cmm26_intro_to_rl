@@ -11,3 +11,5 @@ saved_policies/
 _archived_demo_policy_gradient.ipynb
 lecture1_script.md
 CONTEXT.md
+
+*.pyc
